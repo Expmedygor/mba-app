@@ -664,11 +664,13 @@ function CalendarioModule({ turmas, aulas, alunos, presencas, onUpdate }) {
 
 // ─── Módulo Tarefas ───────────────────────────────────────────────────
 
-function TarefasModule({ tarefas, consultores, alunos, onUpdate }) {
+function TarefasModule({ tarefas, consultores, alunos, turmas, templates, onUpdate }) {
   const [filterConsultor, setFilterConsultor] = useState('')
   const [filterTipo, setFilterTipo] = useState('')
   const [filterStatus, setFilterStatus] = useState('abertas')
   const [showNova, setShowNova] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [aplicarTurma, setAplicarTurma] = useState(null)
   const [nova, setNova] = useState({ descricao:'', consultor_id:'', aluno_id:'', tipo:'tarefa', prazo:'' })
   const [saving, setSaving] = useState(false)
 
@@ -758,6 +760,12 @@ function TarefasModule({ tarefas, consultores, alunos, onUpdate }) {
           <option value="todas">Todas</option>
         </select>
         <Btn onClick={()=>setShowNova(true)} variant='primary' style={{fontSize:12, padding:'6px 14px'}}>+ Nova tarefa</Btn>
+        <Btn onClick={()=>setShowTemplates(true)} variant='default' style={{fontSize:12, padding:'6px 14px'}}>📋 Templates</Btn>
+        <select value={aplicarTurma||''} onChange={e=>setAplicarTurma(e.target.value||null)}
+          style={{fontSize:12,padding:'6px 10px',background:aplicarTurma?'var(--accent)':'var(--surface)',border:`1.5px solid ${aplicarTurma?'var(--accent)':'var(--border2)'}`,borderRadius:7,color:aplicarTurma?'#fff':'var(--text)',outline:'none',cursor:'pointer',fontWeight:500}}>
+          <option value="">Aplicar templates...</option>
+          {turmas.map(t=><option key={t.id} value={t.id}>{t.nome}</option>)}
+        </select>
       </div>
     </div>
 
@@ -871,7 +879,302 @@ function TarefasModule({ tarefas, consultores, alunos, onUpdate }) {
         </div>
       </Modal>
     )}
+    {showTemplates && (
+      <GerenciarTemplatesModal templates={templates} consultores={consultores}
+        onClose={()=>setShowTemplates(false)} onUpdate={onUpdate}/>
+    )}
+    {aplicarTurma && (
+      <AplicarTemplatesModal
+        turma={turmas.find(t=>t.id===aplicarTurma)}
+        aulas={[]} alunos={alunos} consultores={consultores} templates={templates}
+        onClose={()=>setAplicarTurma(null)}
+        onApplied={()=>{setAplicarTurma(null);onUpdate()}}
+      />
+    )}
   </>)
+}
+
+// ─── Modal: Aplicar templates a uma turma ────────────────────────────
+
+function AplicarTemplatesModal({ turma, aulas, alunos, consultores, templates, onClose, onApplied }) {
+  const turmaAlunos = alunos.filter(a => a.turma_id === turma.id && a.status_aluno === 'ativo')
+
+  const [config, setConfig] = useState(() => {
+    const c = {}
+    templates.filter(t => t.ativo).forEach(t => {
+      let prazoDefault = ''
+      if (t.prazo_dias) {
+        const d = new Date()
+        d.setDate(d.getDate() + t.prazo_dias)
+        prazoDefault = d.toISOString().split('T')[0]
+      }
+      c[t.id] = { selecionado: true, consultor_id: '', prazo: prazoDefault }
+    })
+    return c
+  })
+  const [applying, setApplying] = useState(false)
+  const [resultado, setResultado] = useState(null)
+
+  const TIPO_CORES = {
+    tarefa:  { bg:'#eff6ff', text:'#1d4ed8', border:'#bfdbfe', label:'Tarefa' },
+    churn:   { bg:'#fef2f2', text:'#7f1d1d', border:'#fca5a5', label:'Antichurn' },
+    reuniao: { bg:'#f0fdf4', text:'#14532d', border:'#86efac', label:'Reunião' },
+  }
+
+  function toggleTemplate(id) {
+    setConfig(c => ({ ...c, [id]: { ...c[id], selecionado: !c[id].selecionado } }))
+  }
+  function setConsultor(id, val) {
+    setConfig(c => ({ ...c, [id]: { ...c[id], consultor_id: val } }))
+  }
+  function setPrazoVal(id, val) {
+    setConfig(c => ({ ...c, [id]: { ...c[id], prazo: val } }))
+  }
+  function selectAll(val) {
+    setConfig(c => {
+      const n = { ...c }
+      Object.keys(n).forEach(id => { n[id] = { ...n[id], selecionado: val } })
+      return n
+    })
+  }
+
+  const templatesSelecionados = templates.filter(t => config[t.id]?.selecionado)
+  const totalSelecionados = templatesSelecionados.length
+  const faltaConsultor = templatesSelecionados.filter(t => !config[t.id]?.consultor_id)
+  const podeProsseguir = totalSelecionados > 0 && faltaConsultor.length === 0
+
+  async function aplicar() {
+    if (!podeProsseguir) return
+    setApplying(true)
+    let criadas = 0
+    for (const template of templatesSelecionados) {
+      const { consultor_id, prazo } = config[template.id]
+      for (const aluno of turmaAlunos) {
+        await supabase.from('tarefas').insert({
+          aluno_id: aluno.id,
+          turma_id: turma.id,
+          consultor_id,
+          descricao: template.titulo,
+          tipo: template.tipo,
+          prazo: prazo || null,
+        })
+        criadas++
+      }
+    }
+    setApplying(false)
+    setResultado({ criadas, alunos: turmaAlunos.length, templates: totalSelecionados })
+  }
+
+  return (
+    <Modal title={`Aplicar templates — ${turma.nome}`} onClose={onClose} width={580}>
+      {resultado ? (
+        <div style={{textAlign:'center', padding:'10px 0'}}>
+          <div style={{width:52,height:52,borderRadius:'50%',background:'#dcfce7',border:'1px solid #86efac',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 16px'}}>
+            <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#14532d" strokeWidth="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+          <div style={{fontSize:16,fontWeight:700,color:'var(--text)',marginBottom:8}}>Tarefas criadas!</div>
+          <div style={{fontSize:13,color:'var(--muted)',lineHeight:1.9}}>
+            <strong style={{color:'var(--text)'}}>{resultado.criadas}</strong> tarefas criadas<br/>
+            <strong style={{color:'var(--text)'}}>{resultado.templates}</strong> template{resultado.templates!==1?'s':''} aplicado{resultado.templates!==1?'s':''}<br/>
+            <strong style={{color:'var(--text)'}}>{resultado.alunos}</strong> aluno{resultado.alunos!==1?'s':''} da turma
+          </div>
+          <div style={{marginTop:20}}>
+            <Btn onClick={()=>{onApplied();onClose()}} variant='primary'>Ver tarefas</Btn>
+          </div>
+        </div>
+      ) : (<>
+        <div style={{background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 14px',display:'flex',alignItems:'center',gap:12}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:600,color:'var(--text)'}}>{turma.nome}</div>
+            <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>{turmaAlunos.length} aluno{turmaAlunos.length!==1?'s':''} ativo{turmaAlunos.length!==1?'s':''} · {totalSelecionados * turmaAlunos.length} tarefas serão criadas</div>
+          </div>
+          <div style={{marginLeft:'auto',display:'flex',gap:10}}>
+            <button onClick={()=>selectAll(true)} style={{fontSize:11,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:500}}>Selecionar todos</button>
+            <button onClick={()=>selectAll(false)} style={{fontSize:11,color:'var(--muted)',background:'none',border:'none',cursor:'pointer'}}>Limpar</button>
+          </div>
+        </div>
+
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {templates.map(t => {
+            const tc = TIPO_CORES[t.tipo] || TIPO_CORES.tarefa
+            const cfg = config[t.id] || { selecionado:false, consultor_id:'', prazo:'' }
+            const sel = cfg.selecionado
+            const semConsultor = sel && !cfg.consultor_id
+
+            return (
+              <div key={t.id} style={{border:`1.5px solid ${sel?(semConsultor?'#fdba74':'var(--accent)'):'var(--border)'}`,background:sel?'var(--surface)':'var(--surface2)',borderRadius:11,overflow:'hidden',transition:'all 0.15s'}}>
+                <div onClick={()=>toggleTemplate(t.id)} style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',cursor:'pointer'}}>
+                  <div style={{width:18,height:18,borderRadius:5,flexShrink:0,border:`2px solid ${sel?'var(--accent)':'var(--border2)'}`,background:sel?'var(--accent)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',transition:'all 0.15s'}}>
+                    {sel&&<svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>}
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                      <span style={{fontSize:13,fontWeight:600,color:sel?'var(--text)':'var(--muted)'}}>{t.titulo}</span>
+                      <span style={{fontSize:10,fontWeight:600,padding:'1px 7px',borderRadius:20,background:tc.bg,color:tc.text,border:`1px solid ${tc.border}`}}>{tc.label}</span>
+                    </div>
+                    <div style={{fontSize:11,color:'var(--muted)',marginTop:3,lineHeight:1.4}}>{t.descricao}</div>
+                  </div>
+                  {sel && semConsultor && (
+                    <span style={{fontSize:10,fontWeight:600,color:'#c2410c',background:'#fff7ed',padding:'2px 8px',borderRadius:20,border:'1px solid #fdba74',flexShrink:0,whiteSpace:'nowrap'}}>falta responsável</span>
+                  )}
+                </div>
+                {sel && (
+                  <div style={{padding:'0 14px 14px',paddingTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,borderTop:'1px solid var(--border)'}} onClick={e=>e.stopPropagation()}>
+                    <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                      <label style={{fontSize:11,fontWeight:600,color:'var(--text2)'}}>Responsável <span style={{color:'#dc2626'}}>*</span></label>
+                      <select value={cfg.consultor_id} onChange={e=>setConsultor(t.id,e.target.value)}
+                        style={{fontSize:12,padding:'7px 10px',background:'var(--surface)',border:`1.5px solid ${semConsultor?'#fdba74':'var(--border2)'}`,borderRadius:8,color:cfg.consultor_id?'var(--text)':'var(--muted)',outline:'none',width:'100%'}}>
+                        <option value="">Selecionar...</option>
+                        {consultores.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+                      </select>
+                    </div>
+                    <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                      <label style={{fontSize:11,fontWeight:600,color:'var(--text2)'}}>
+                        Prazo{t.prazo_dias&&<span style={{fontSize:10,color:'var(--muted)',fontWeight:400}}> (sugerido: +{t.prazo_dias}d)</span>}
+                      </label>
+                      <input type="date" value={cfg.prazo} onChange={e=>setPrazoVal(t.id,e.target.value)}
+                        style={{fontSize:12,padding:'7px 10px',background:'var(--surface)',border:'1.5px solid var(--border2)',borderRadius:8,color:'var(--text)',outline:'none',width:'100%'}}/>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {faltaConsultor.length > 0 && (
+          <div style={{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:8,padding:'9px 12px',fontSize:12,color:'#7c2d12'}}>
+            Preencha o responsável em {faltaConsultor.length > 1 ? `${faltaConsultor.length} templates` : `"${faltaConsultor[0].titulo}"`} para continuar.
+          </div>
+        )}
+
+        <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4,borderTop:'1px solid var(--border)'}}>
+          <Btn onClick={onClose} variant='ghost'>Cancelar</Btn>
+          <Btn onClick={aplicar} variant='primary' disabled={applying||!podeProsseguir}>
+            {applying?'Criando tarefas...':`Criar ${totalSelecionados * turmaAlunos.length} tarefas`}
+          </Btn>
+        </div>
+      </>)}
+    </Modal>
+  )
+}
+
+
+// ─── Modal: Gerenciar biblioteca de templates ─────────────────────────
+
+function GerenciarTemplatesModal({ templates, consultores, onClose, onUpdate }) {
+  const [editando, setEditando] = useState(null) // null | 'novo' | template
+  const [form, setForm] = useState({ titulo:'', descricao:'', tipo:'tarefa', atribuir_para:'consultor_aluno', consultor_fixo_id:'', prazo_dias:'', gatilho:'qualquer_aula' })
+  const [saving, setSaving] = useState(false)
+
+  const TIPO_CORES = {
+    tarefa:  { bg:'#eff6ff', text:'#1d4ed8', border:'#bfdbfe', label:'Tarefa' },
+    churn:   { bg:'#fef2f2', text:'#7f1d1d', border:'#fca5a5', label:'Antichurn' },
+    reuniao: { bg:'#f0fdf4', text:'#14532d', border:'#86efac', label:'Reunião' },
+  }
+
+  function abrirNovo() {
+    setForm({ titulo:'', descricao:'', tipo:'tarefa', atribuir_para:'consultor_aluno', consultor_fixo_id:'', prazo_dias:'', gatilho:'qualquer_aula' })
+    setEditando('novo')
+  }
+
+  function abrirEdicao(t) {
+    setForm({ titulo:t.titulo, descricao:t.descricao, tipo:t.tipo, atribuir_para:t.atribuir_para, consultor_fixo_id:t.consultor_fixo_id||'', prazo_dias:t.prazo_dias||'', gatilho:t.gatilho })
+    setEditando(t)
+  }
+
+  async function salvar() {
+    if (!form.titulo.trim()||!form.descricao.trim()) return
+    setSaving(true)
+    const payload = {
+      titulo: form.titulo.trim(),
+      descricao: form.descricao.trim(),
+      tipo: form.tipo,
+      atribuir_para: form.atribuir_para,
+      consultor_fixo_id: form.atribuir_para==='consultor_fixo'?form.consultor_fixo_id||null:null,
+      prazo_dias: form.prazo_dias?parseInt(form.prazo_dias):null,
+      gatilho: form.gatilho,
+    }
+    if (editando==='novo') {
+      await supabase.from('tarefa_templates').insert(payload)
+    } else {
+      await supabase.from('tarefa_templates').update(payload).eq('id', editando.id)
+    }
+    setSaving(false); setEditando(null); onUpdate()
+  }
+
+  async function toggleAtivo(t) {
+    await supabase.from('tarefa_templates').update({ ativo: !t.ativo }).eq('id', t.id)
+    onUpdate()
+  }
+
+  async function deletar(id) {
+    await supabase.from('tarefa_templates').delete().eq('id', id)
+    onUpdate()
+  }
+
+  return (
+    <Modal title="Biblioteca de templates" onClose={onClose} width={620}>
+      {editando ? (
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          <div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{editando==='novo'?'Novo template':'Editar template'}</div>
+          <Input label="Título *" value={form.titulo} onChange={v=>setForm(f=>({...f,titulo:v}))} placeholder="Ex: Enviar link da gravação" required/>
+          <Textarea label="Descrição *" value={form.descricao} onChange={v=>setForm(f=>({...f,descricao:v}))} rows={2} placeholder="O que deve ser feito..." required/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <SelectField label="Tipo" value={form.tipo} onChange={v=>setForm(f=>({...f,tipo:v}))}
+              options={[{value:'tarefa',label:'Tarefa'},{value:'churn',label:'Antichurn'},{value:'reuniao',label:'Reunião'}]}/>
+            <SelectField label="Gatilho" value={form.gatilho} onChange={v=>setForm(f=>({...f,gatilho:v}))}
+              options={[{value:'qualquer_aula',label:'Qualquer aula'},{value:'aula_regular',label:'Aula regular'},{value:'aula_1:1',label:'Aula 1:1'},{value:'apos_aula',label:'Após aula'},{value:'pos_calendario',label:'Pós-calendário'}]}/>
+            <SelectField label="Atribuir para" value={form.atribuir_para} onChange={v=>setForm(f=>({...f,atribuir_para:v}))}
+              options={[{value:'consultor_aluno',label:'Consultor do aluno'},{value:'consultor_fixo',label:'Consultor fixo'},{value:'escolher_na_hora',label:'Escolher na hora'}]}/>
+            <Input label="Prazo (dias após encontro)" type="number" value={String(form.prazo_dias)} onChange={v=>setForm(f=>({...f,prazo_dias:v}))} placeholder="Ex: 3"/>
+          </div>
+          {form.atribuir_para==='consultor_fixo'&&(
+            <SelectField label="Consultor fixo *" value={form.consultor_fixo_id} onChange={v=>setForm(f=>({...f,consultor_fixo_id:v}))}
+              options={consultores.map(c=>({value:c.id,label:c.nome}))}/>
+          )}
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4,borderTop:'1px solid var(--border)'}}>
+            <Btn onClick={()=>setEditando(null)} variant='ghost'>Cancelar</Btn>
+            <Btn onClick={salvar} variant='primary' disabled={saving||!form.titulo.trim()||!form.descricao.trim()}>{saving?'Salvando...':'Salvar template'}</Btn>
+          </div>
+        </div>
+      ) : (<>
+        <div style={{display:'flex',justifyContent:'flex-end'}}>
+          <Btn onClick={abrirNovo} variant='primary' style={{fontSize:12,padding:'6px 14px'}}>+ Novo template</Btn>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {templates.length===0?(
+            <div style={{textAlign:'center',padding:'30px 0',color:'var(--muted)',fontSize:13}}>Nenhum template cadastrado</div>
+          ):templates.map(t=>{
+            const tc=TIPO_CORES[t.tipo]||TIPO_CORES.tarefa
+            return(
+              <div key={t.id} style={{display:'flex',alignItems:'flex-start',gap:12,padding:'12px 14px',background:t.ativo?'var(--surface)':'var(--surface2)',border:'1px solid var(--border)',borderRadius:10,opacity:t.ativo?1:0.6}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+                    <span style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{t.titulo}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:'1px 7px',borderRadius:20,background:tc.bg,color:tc.text,border:`1px solid ${tc.border}`}}>{tc.label}</span>
+                    {!t.ativo&&<span style={{fontSize:10,color:'var(--muted)',background:'var(--surface2)',padding:'1px 7px',borderRadius:20,border:'1px solid var(--border)'}}>Inativo</span>}
+                  </div>
+                  <div style={{fontSize:12,color:'var(--muted)',lineHeight:1.4,marginBottom:4}}>{t.descricao}</div>
+                  <div style={{fontSize:11,color:'var(--muted)'}}>
+                    {t.atribuir_para==='consultor_aluno'?'Consultor do aluno':t.atribuir_para==='consultor_fixo'?`Fixo: ${consultores.find(c=>c.id===t.consultor_fixo_id)?.nome||'—'}`:'Escolher na hora'}
+                    {t.prazo_dias?` · +${t.prazo_dias} dia${t.prazo_dias!==1?'s':''}`:' · Sem prazo'}
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:6,flexShrink:0}}>
+                  <button onClick={()=>toggleAtivo(t)} style={{fontSize:11,fontWeight:600,padding:'4px 10px',borderRadius:7,cursor:'pointer',background:t.ativo?'#dcfce7':'var(--surface2)',color:t.ativo?'#14532d':'var(--muted)',border:`1px solid ${t.ativo?'#86efac':'var(--border)'}`,transition:'all 0.15s'}}>
+                    {t.ativo?'Ativo':'Inativo'}
+                  </button>
+                  <Btn onClick={()=>abrirEdicao(t)} variant='default' style={{fontSize:11,padding:'4px 10px'}}>Editar</Btn>
+                  <button onClick={()=>deletar(t.id)} style={{fontSize:11,padding:'4px 8px',borderRadius:7,cursor:'pointer',background:'#fef2f2',color:'#7f1d1d',border:'1px solid #fca5a5'}}>✕</button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </>)}
+    </Modal>
+  )
 }
 
 // ─── App principal ────────────────────────────────────────────────────
@@ -888,6 +1191,7 @@ export default function App() {
   const [notas,setNotas]=useState([])
   const [historico,setHistorico]=useState([])
   const [contatos,setContatos]=useState([])
+  const [templates,setTemplates]=useState([])
   const [loading,setLoading]=useState(true)
   const [activeNav,setActiveNav]=useState('dashboard')
   const [selected,setSelected]=useState(null)
@@ -905,7 +1209,7 @@ export default function App() {
 
   const loadAll=useCallback(async()=>{
     setLoading(true)
-    const [a,t,c,au,r,ta,p,n,h,ct]=await Promise.all([
+    const [a,t,c,au,r,ta,p,n,h,ct,tmpl]=await Promise.all([
       supabase.from('view_alunos_dashboard').select('*'),
       supabase.from('turmas').select('*'),
       supabase.from('consultores').select('*').order('nome'),
@@ -916,11 +1220,12 @@ export default function App() {
       supabase.from('notas_internas').select('*,consultores(nome)').order('created_at',{ascending:false}),
       supabase.from('churn_historico').select('*').order('criado_em',{ascending:false}),
       supabase.from('contatos_cs').select('*,consultores(nome)').order('data_contato',{ascending:false}),
+      supabase.from('tarefa_templates').select('*').order('ordem'),
     ])
     setAlunos(a.data||[]);setTurmas(t.data||[]);setConsultores(c.data||[])
     setAulas(au.data||[]);setReunioes(r.data||[]);setTarefas(ta.data||[])
     setPresencas(p.data||[]);setNotas(n.data||[]);setHistorico(h.data||[])
-    setContatos(ct.data||[])
+    setContatos(ct.data||[]);setTemplates(tmpl.data||[])
     setLoading(false)
   },[])
 
@@ -986,7 +1291,7 @@ export default function App() {
         ):activeNav==='calendario'?(
           <CalendarioModule turmas={turmas} aulas={aulas} alunos={alunos} presencas={presencas} onUpdate={loadAll}/>
         ):(
-          <TarefasModule tarefas={tarefas} consultores={consultores} alunos={alunos} onUpdate={loadAll}/>
+          <TarefasModule tarefas={tarefas} consultores={consultores} alunos={alunos} turmas={turmas} templates={templates} onUpdate={loadAll}/>
         )}
       </div>
 
