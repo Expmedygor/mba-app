@@ -544,7 +544,7 @@ function AlunosModule({ alunos, turmas, consultores, onSelectAluno, onNovoAluno 
 
 // ─── Módulo Calendário ────────────────────────────────────────────────
 
-function CalendarioModule({ turmas, aulas, alunos, presencas, onUpdate }) {
+function CalendarioModule({ turmas, aulas, alunos, presencas, onUpdate, onOpenBuilder }) {
   const [selectedTurma, setSelectedTurma] = useState(turmas[0]?.id||'')
   const [selectedAula, setSelectedAula] = useState(null)
   const [savingPresenca, setSavingPresenca] = useState(false)
@@ -591,6 +591,7 @@ function CalendarioModule({ turmas, aulas, alunos, presencas, onUpdate }) {
       <div style={{display:'flex',gap:8,alignItems:'center'}}>
         <select value={selectedTurma} onChange={e=>{setSelectedTurma(e.target.value);setSelectedAula(null)}} style={{fontSize:12,padding:'6px 10px',background:'var(--surface)',border:'1.5px solid var(--border2)',borderRadius:7,color:'var(--text)',outline:'none',cursor:'pointer',fontWeight:500}}>{turmas.map(t=><option key={t.id} value={t.id}>{t.nome}</option>)}</select>
         <Btn onClick={()=>setShowNovaAula(true)} variant='primary' style={{fontSize:12,padding:'6px 14px'}}>+ Novo encontro</Btn>
+        <Btn onClick={onOpenBuilder} variant='default' style={{fontSize:12,padding:'6px 14px'}}>🗓 Montar calendário</Btn>
       </div>
     </div>
     <div style={{flex:1,overflowY:'auto',padding:'18px 22px',display:'grid',gridTemplateColumns:'minmax(0,1fr) 320px',gap:16,alignItems:'start'}}>
@@ -1177,6 +1178,379 @@ function GerenciarTemplatesModal({ templates, consultores, onClose, onUpdate }) 
   )
 }
 
+// ─── Construtor de Calendário ──────────────────────────────────────────
+
+function CalendarioBuilder({ turmas, consultores, templates, onClose, onSaved }) {
+  // Etapas: 1 = selecionar/criar turma, 2 = montar encontros, 3 = definir tarefas
+  const [etapa, setEtapa] = useState(1)
+  const [turmaId, setTurmaId] = useState('')
+  const [novaTurma, setNovaTurma] = useState({ nome:'', data_inicio:'' })
+  const [criandoTurma, setCriandoTurma] = useState(false)
+  const [salvandoTurma, setSalvandoTurma] = useState(false)
+
+  // Etapa 2: lista de encontros configurados
+  // cada item: { tipo_nome, categoria, data, incluido }
+  const SEQUENCIA_PADRAO = [
+    {tipo_nome:'Aula 1',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 2',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 3',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 4',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 5',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 6',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 7',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 8',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'Aula 9',     categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'1:1 - 1',    categoria:'1:1',        incluido:true, data:''},
+    {tipo_nome:'1:1 - 2',    categoria:'1:1',        incluido:true, data:''},
+    {tipo_nome:'Aula 10',    categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'1:1 - 3',    categoria:'1:1',        incluido:true, data:''},
+    {tipo_nome:'Presencial', categoria:'presencial', incluido:true, data:''},
+    {tipo_nome:'Aula 11',    categoria:'aula',       incluido:true, data:''},
+    {tipo_nome:'1:1 - 4',    categoria:'1:1',        incluido:true, data:''},
+    {tipo_nome:'Aula 12',    categoria:'aula',       incluido:true, data:''},
+  ]
+  const [encontros, setEncontros] = useState(SEQUENCIA_PADRAO)
+  const [novoEncontro, setNovoEncontro] = useState({ tipo_nome:'', categoria:'outro', data:'' })
+
+  // Etapa 3: tarefas por encontro
+  // { encontro_idx: [ { template_id, titulo, tipo, consultor_id, data_prevista, incluido } ] }
+  const [tarefasEncontro, setTarefasEncontro] = useState({})
+  const [encontroAberto, setEncontroAberto] = useState(null)
+  const [salvando, setSalvando] = useState(false)
+
+  const CAT_STYLE = {
+    aula:       { bg:'#eff6ff', text:'#1d4ed8', border:'#bfdbfe' },
+    '1:1':      { bg:'#ede9fe', text:'#2e1065', border:'#c4b5fd' },
+    presencial: { bg:'#f0fdf4', text:'#14532d', border:'#86efac' },
+    outro:      { bg:'var(--surface2)', text:'var(--muted)', border:'var(--border)' },
+  }
+
+  const encontrosIncluidos = encontros.filter(e => e.incluido)
+
+  // Inicializar tarefas quando entrar na etapa 3
+  function inicializarTarefas() {
+    const t = {}
+    encontrosIncluidos.forEach((enc, idx) => {
+      // Pré-popular com todos os templates ativos
+      t[idx] = templates.filter(tmpl => tmpl.ativo).map(tmpl => {
+        // Calcular data sugerida com base no prazo_dias do template
+        let data_prevista = ''
+        if (enc.data && tmpl.prazo_dias) {
+          const d = new Date(enc.data + 'T12:00:00')
+          d.setDate(d.getDate() + tmpl.prazo_dias)
+          data_prevista = d.toISOString().split('T')[0]
+        }
+        return {
+          template_id: tmpl.id,
+          titulo: tmpl.titulo,
+          tipo: tmpl.tipo,
+          consultor_id: '',
+          data_prevista,
+          incluido: true,
+        }
+      })
+    })
+    setTarefasEncontro(t)
+  }
+
+  async function salvarCalendario() {
+    if (!turmaId) return
+    setSalvando(true)
+
+    for (let idx = 0; idx < encontrosIncluidos.length; idx++) {
+      const enc = encontrosIncluidos[idx]
+
+      // Criar aula no banco
+      const { data: aulaData } = await supabase.from('aulas').insert({
+        turma_id: turmaId,
+        numero: idx + 1,
+        tema: enc.tipo_nome,
+        data_aula: enc.data || null,
+        status: enc.data && enc.data < new Date().toISOString().split('T')[0] ? 'realizada' : 'futura',
+      }).select().single()
+
+      if (!aulaData) continue
+
+      // Criar calendario_tarefas para as tarefas selecionadas
+      const tarefas = (tarefasEncontro[idx] || []).filter(t => t.incluido)
+      for (const tarefa of tarefas) {
+        if (!tarefa.titulo.trim()) continue
+        await supabase.from('calendario_tarefas').insert({
+          aula_id: aulaData.id,
+          template_id: tarefa.template_id || null,
+          titulo: tarefa.titulo,
+          tipo: tarefa.tipo,
+          consultor_id: tarefa.consultor_id || null,
+          data_prevista: tarefa.data_prevista || null,
+        })
+      }
+    }
+
+    setSalvando(false)
+    onSaved()
+    onClose()
+  }
+
+  const inputStyle = { fontSize:12, padding:'6px 9px', background:'var(--surface)', border:'1.5px solid var(--border2)', borderRadius:7, color:'var(--text)', outline:'none', width:'100%' }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(15,23,42,0.6)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div style={{background:'var(--surface)',borderRadius:16,width:'100%',maxWidth:720,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 80px rgba(0,0,0,0.2)',animation:'fadeIn 0.2s ease'}}>
+
+        {/* Header com etapas */}
+        <div style={{padding:'18px 24px',borderBottom:'1px solid var(--border)',flexShrink:0}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+            <div style={{fontSize:16,fontWeight:700,color:'var(--text)'}}>Construtor de calendário</div>
+            <button onClick={onClose} style={{background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:7,width:28,height:28,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--muted)',fontSize:14}}>✕</button>
+          </div>
+          {/* Stepper */}
+          <div style={{display:'flex',alignItems:'center',gap:0}}>
+            {[{n:1,label:'Turma'},{n:2,label:'Encontros'},{n:3,label:'Tarefas'}].map((s,i) => (
+              <div key={s.n} style={{display:'flex',alignItems:'center',flex:i<2?1:'auto'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7}}>
+                  <div style={{width:26,height:26,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,background:etapa>=s.n?'var(--accent)':'var(--surface2)',color:etapa>=s.n?'#fff':'var(--muted)',border:`2px solid ${etapa>=s.n?'var(--accent)':'var(--border2)'}`,flexShrink:0}}>{s.n}</div>
+                  <span style={{fontSize:12,fontWeight:etapa===s.n?600:400,color:etapa===s.n?'var(--accent-text)':'var(--muted)'}}>{s.label}</span>
+                </div>
+                {i < 2 && <div style={{flex:1,height:1.5,background:etapa>s.n?'var(--accent)':'var(--border2)',margin:'0 10px'}}/>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Conteúdo */}
+        <div style={{flex:1,overflowY:'auto',padding:'20px 24px'}}>
+
+          {/* ETAPA 1: TURMA */}
+          {etapa===1&&(<div style={{display:'flex',flexDirection:'column',gap:16}}>
+            <div style={{fontSize:13,color:'var(--muted)',lineHeight:1.5}}>Selecione uma turma existente ou crie uma nova para montar o calendário.</div>
+
+            {/* Turmas existentes */}
+            {turmas.length > 0 && (<>
+              <div style={{fontSize:12,fontWeight:700,color:'var(--text2)'}}>Turmas existentes</div>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {turmas.map(t => (
+                  <div key={t.id} onClick={()=>setTurmaId(t.id)}
+                    style={{display:'flex',alignItems:'center',gap:12,padding:'12px 14px',border:`1.5px solid ${turmaId===t.id?'var(--accent)':'var(--border)'}`,background:turmaId===t.id?'var(--accent-dim)':'var(--surface)',borderRadius:10,cursor:'pointer',transition:'all 0.15s'}}>
+                    <div style={{width:18,height:18,borderRadius:'50%',border:`2px solid ${turmaId===t.id?'var(--accent)':'var(--border2)'}`,background:turmaId===t.id?'var(--accent)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                      {turmaId===t.id&&<div style={{width:6,height:6,borderRadius:'50%',background:'#fff'}}/>}
+                    </div>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{t.nome}</div>
+                      <div style={{fontSize:11,color:'var(--muted)',marginTop:2}}>
+                        {t.data_inicio ? fd(t.data_inicio) : 'Sem data'} — {t.data_fim ? fd(t.data_fim) : 'Em andamento'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:10}}><div style={{flex:1,height:1,background:'var(--border)'}}/><span style={{fontSize:11,color:'var(--muted)',flexShrink:0}}>ou crie nova</span><div style={{flex:1,height:1,background:'var(--border)'}}/></div>
+            </>)}
+
+            {/* Criar nova turma */}
+            {!criandoTurma ? (
+              <button onClick={()=>setCriandoTurma(true)} style={{padding:'12px',border:'1.5px dashed var(--border2)',borderRadius:10,background:'transparent',cursor:'pointer',fontSize:13,color:'var(--muted)',fontWeight:500,transition:'all 0.15s'}}>
+                + Nova turma
+              </button>
+            ) : (
+              <div style={{border:'1.5px solid var(--border2)',borderRadius:10,padding:'14px',display:'flex',flexDirection:'column',gap:12}}>
+                <div style={{fontSize:12,fontWeight:700,color:'var(--text2)'}}>Nova turma</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                  <div style={{display:'flex',flexDirection:'column',gap:5,gridColumn:'1/-1'}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'var(--text2)'}}>Nome da turma *</label>
+                    <input value={novaTurma.nome} onChange={e=>setNovaTurma(n=>({...n,nome:e.target.value}))} placeholder="Ex: Turma 2" style={inputStyle}/>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                    <label style={{fontSize:11,fontWeight:600,color:'var(--text2)'}}>Data de início</label>
+                    <input type="date" value={novaTurma.data_inicio} onChange={e=>setNovaTurma(n=>({...n,data_inicio:e.target.value}))} style={inputStyle}/>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                  <Btn onClick={()=>setCriandoTurma(false)} variant='ghost' style={{fontSize:12,padding:'5px 12px'}}>Cancelar</Btn>
+                  <Btn disabled={salvandoTurma||!novaTurma.nome.trim()} variant='primary' style={{fontSize:12,padding:'5px 12px'}}
+                    onClick={async()=>{
+                      setSalvandoTurma(true)
+                      const fim = novaTurma.data_inicio ? (() => { const d=new Date(novaTurma.data_inicio+'T12:00:00'); d.setFullYear(d.getFullYear()+1); return d.toISOString().split('T')[0] })() : null
+                      const {data} = await supabase.from('turmas').insert({nome:novaTurma.nome.trim(),data_inicio:novaTurma.data_inicio||new Date().toISOString().split('T')[0],data_fim:fim,status:'ativa'}).select().single()
+                      setSalvandoTurma(false)
+                      if (data) { setTurmaId(data.id); setCriandoTurma(false); setNovaTurma({nome:'',data_inicio:''}) }
+                    }}>
+                    {salvandoTurma?'Criando...':'Criar turma'}
+                  </Btn>
+                </div>
+              </div>
+            )}
+          </div>)}
+
+          {/* ETAPA 2: ENCONTROS */}
+          {etapa===2&&(<div style={{display:'flex',flexDirection:'column',gap:14}}>
+            <div style={{fontSize:13,color:'var(--muted)',lineHeight:1.5}}>
+              Marque os encontros que fazem parte deste calendário e defina as datas. Você pode reordenar ou adicionar encontros customizados.
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {encontros.map((enc, idx) => {
+                const cs = CAT_STYLE[enc.categoria] || CAT_STYLE.outro
+                return (
+                  <div key={idx} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:`1.5px solid ${enc.incluido?cs.border:'var(--border)'}`,background:enc.incluido?cs.bg+'55':'var(--surface2)',borderRadius:9,opacity:enc.incluido?1:0.5,transition:'all 0.15s'}}>
+                    {/* Checkbox */}
+                    <button onClick={()=>setEncontros(e=>{const n=[...e];n[idx]={...n[idx],incluido:!n[idx].incluido};return n})}
+                      style={{width:18,height:18,borderRadius:5,flexShrink:0,border:`2px solid ${enc.incluido?cs.border:'var(--border2)'}`,background:enc.incluido?cs.bg:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                      {enc.incluido&&<svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke={cs.text} strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>}
+                    </button>
+                    {/* Nome */}
+                    <div style={{flex:1}}>
+                      <input value={enc.tipo_nome} onChange={e=>setEncontros(es=>{const n=[...es];n[idx]={...n[idx],tipo_nome:e.target.value};return n})}
+                        style={{...inputStyle,border:'none',background:'transparent',padding:'2px 0',fontSize:13,fontWeight:600,color:enc.incluido?cs.text:'var(--muted)',width:'auto'}}/>
+                    </div>
+                    <span style={{fontSize:10,fontWeight:600,padding:'1px 8px',borderRadius:20,background:cs.bg,color:cs.text,border:`1px solid ${cs.border}`,flexShrink:0,textTransform:'capitalize'}}>{enc.categoria}</span>
+                    {/* Data */}
+                    <input type="date" value={enc.data}
+                      onChange={e=>setEncontros(es=>{const n=[...es];n[idx]={...n[idx],data:e.target.value};return n})}
+                      style={{...inputStyle,width:130,flexShrink:0,fontSize:12}}/>
+                    {/* Remover */}
+                    <button onClick={()=>setEncontros(e=>e.filter((_,i)=>i!==idx))} style={{background:'none',border:'none',cursor:'pointer',color:'var(--muted)',fontSize:14,padding:'0 2px',flexShrink:0,opacity:0.5}}
+                      onMouseEnter={e=>e.target.style.opacity=1} onMouseLeave={e=>e.target.style.opacity=0.5}>✕</button>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Adicionar encontro customizado */}
+            <div style={{display:'flex',gap:8,alignItems:'flex-end',padding:'12px',border:'1.5px dashed var(--border2)',borderRadius:9}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:11,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:4}}>Nome do encontro</label>
+                <input value={novoEncontro.tipo_nome} onChange={e=>setNovoEncontro(n=>({...n,tipo_nome:e.target.value}))} placeholder="Ex: Workshop extra" style={inputStyle}/>
+              </div>
+              <div style={{width:120}}>
+                <label style={{fontSize:11,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:4}}>Categoria</label>
+                <select value={novoEncontro.categoria} onChange={e=>setNovoEncontro(n=>({...n,categoria:e.target.value}))} style={inputStyle}>
+                  <option value="aula">Aula</option>
+                  <option value="1:1">1:1</option>
+                  <option value="presencial">Presencial</option>
+                  <option value="outro">Outro</option>
+                </select>
+              </div>
+              <div style={{width:130}}>
+                <label style={{fontSize:11,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:4}}>Data</label>
+                <input type="date" value={novoEncontro.data} onChange={e=>setNovoEncontro(n=>({...n,data:e.target.value}))} style={inputStyle}/>
+              </div>
+              <Btn onClick={()=>{
+                if(!novoEncontro.tipo_nome.trim()) return
+                setEncontros(e=>[...e,{...novoEncontro,incluido:true}])
+                setNovoEncontro({tipo_nome:'',categoria:'outro',data:''})
+              }} variant='default' style={{fontSize:12,padding:'6px 12px',flexShrink:0}}>+ Adicionar</Btn>
+            </div>
+
+            <div style={{fontSize:11,color:'var(--muted)',background:'var(--surface2)',padding:'8px 12px',borderRadius:7}}>
+              {encontrosIncluidos.length} encontro{encontrosIncluidos.length!==1?'s':''} incluído{encontrosIncluidos.length!==1?'s':''} · {encontros.filter(e=>e.incluido&&e.data).length} com data definida
+            </div>
+          </div>)}
+
+          {/* ETAPA 3: TAREFAS */}
+          {etapa===3&&(<div style={{display:'flex',flexDirection:'column',gap:10}}>
+            <div style={{fontSize:13,color:'var(--muted)',lineHeight:1.5}}>
+              Para cada encontro, selecione as atividades acessórias. As datas são calculadas automaticamente com base no template, mas você pode ajustá-las.
+            </div>
+            {encontrosIncluidos.map((enc, idx) => {
+              const cs = CAT_STYLE[enc.categoria] || CAT_STYLE.outro
+              const aberto = encontroAberto === idx
+              const tarefas = tarefasEncontro[idx] || []
+              const ativas = tarefas.filter(t=>t.incluido).length
+
+              return (
+                <div key={idx} style={{border:`1px solid ${aberto?'var(--accent)':'var(--border)'}`,borderRadius:11,overflow:'hidden',transition:'border-color 0.15s'}}>
+                  {/* Cabeçalho do encontro */}
+                  <div onClick={()=>setEncontroAberto(aberto?null:idx)}
+                    style={{display:'flex',alignItems:'center',gap:10,padding:'11px 14px',cursor:'pointer',background:aberto?'var(--accent-dim)':'var(--surface)'}}>
+                    <span style={{fontSize:11,fontWeight:600,padding:'1px 8px',borderRadius:20,background:cs.bg,color:cs.text,border:`1px solid ${cs.border}`,flexShrink:0}}>{enc.categoria}</span>
+                    <span style={{fontSize:13,fontWeight:600,color:'var(--text)',flex:1}}>{enc.tipo_nome}</span>
+                    {enc.data&&<span style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)'}}>{fd(enc.data)}</span>}
+                    <span style={{fontSize:11,color:ativas>0?'var(--accent-text)':'var(--muted)',fontWeight:ativas>0?600:400,background:ativas>0?'var(--accent-dim)':'var(--surface2)',padding:'1px 8px',borderRadius:20,border:`1px solid ${ativas>0?'#bfdbfe':'var(--border)'}`,flexShrink:0}}>
+                      {ativas} tarefa{ativas!==1?'s':''}
+                    </span>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" style={{flexShrink:0,transform:aberto?'rotate(180deg)':'none',transition:'transform 0.2s'}}><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+
+                  {/* Tarefas do encontro */}
+                  {aberto&&(<div style={{borderTop:'1px solid var(--border)'}}>
+                    {tarefas.map((tarefa, tidx) => (
+                      <div key={tidx} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',borderBottom:'1px solid var(--border)',background:tarefa.incluido?'var(--surface)':'var(--surface2)',opacity:tarefa.incluido?1:0.5}}>
+                        {/* Toggle incluído */}
+                        <button onClick={()=>setTarefasEncontro(te=>{
+                            const n={...te};n[idx]=[...n[idx]];n[idx][tidx]={...n[idx][tidx],incluido:!n[idx][tidx].incluido};return n
+                          })}
+                          style={{width:18,height:18,borderRadius:5,flexShrink:0,border:`2px solid ${tarefa.incluido?'var(--accent)':'var(--border2)'}`,background:tarefa.incluido?'var(--accent)':'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                          {tarefa.incluido&&<svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>}
+                        </button>
+                        {/* Título */}
+                        <div style={{flex:1,minWidth:0}}>
+                          <input value={tarefa.titulo}
+                            onChange={e=>setTarefasEncontro(te=>{const n={...te};n[idx]=[...n[idx]];n[idx][tidx]={...n[idx][tidx],titulo:e.target.value};return n})}
+                            style={{...inputStyle,border:'none',background:'transparent',padding:'2px 0',fontSize:12,fontWeight:500,color:'var(--text)'}}/>
+                        </div>
+                        {/* Responsável */}
+                        <select value={tarefa.consultor_id}
+                          onChange={e=>setTarefasEncontro(te=>{const n={...te};n[idx]=[...n[idx]];n[idx][tidx]={...n[idx][tidx],consultor_id:e.target.value};return n})}
+                          style={{...inputStyle,width:130,fontSize:11,flexShrink:0}}>
+                          <option value="">Responsável...</option>
+                          {consultores.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+                        </select>
+                        {/* Data prevista */}
+                        <input type="date" value={tarefa.data_prevista}
+                          onChange={e=>setTarefasEncontro(te=>{const n={...te};n[idx]=[...n[idx]];n[idx][tidx]={...n[idx][tidx],data_prevista:e.target.value};return n})}
+                          style={{...inputStyle,width:130,fontSize:11,flexShrink:0}}/>
+                      </div>
+                    ))}
+                    {/* Adicionar tarefa avulsa */}
+                    <div style={{padding:'8px 14px'}}>
+                      <button onClick={()=>setTarefasEncontro(te=>{
+                          const n={...te}
+                          n[idx]=[...(n[idx]||[]),{template_id:null,titulo:'Nova tarefa',tipo:'tarefa',consultor_id:'',data_prevista:enc.data||'',incluido:true}]
+                          return n
+                        })}
+                        style={{fontSize:11,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:500}}>
+                        + Adicionar tarefa neste encontro
+                      </button>
+                    </div>
+                  </div>)}
+                </div>
+              )
+            })}
+          </div>)}
+        </div>
+
+        {/* Footer com navegação */}
+        <div style={{padding:'14px 24px',borderTop:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+          <div style={{fontSize:11,color:'var(--muted)'}}>
+            {etapa===1 && (turmaId ? `Turma: ${turmas.find(t=>t.id===turmaId)?.nome||'Selecionada'}` : 'Nenhuma turma selecionada')}
+            {etapa===2 && `${encontrosIncluidos.length} encontros`}
+            {etapa===3 && `${Object.values(tarefasEncontro).flat().filter(t=>t.incluido).length} tarefas no total`}
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            {etapa>1&&<Btn onClick={()=>setEtapa(e=>e-1)} variant='ghost'>← Voltar</Btn>}
+            {etapa<3&&(
+              <Btn
+                onClick={()=>{
+                  if (etapa===2) inicializarTarefas()
+                  setEtapa(e=>e+1)
+                }}
+                variant='primary'
+                disabled={etapa===1&&!turmaId||etapa===2&&encontrosIncluidos.length===0}
+              >
+                Próximo →
+              </Btn>
+            )}
+            {etapa===3&&(
+              <Btn onClick={salvarCalendario} variant='primary' disabled={salvando}>
+                {salvando?'Salvando calendário...':'✓ Salvar calendário'}
+              </Btn>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── App principal ────────────────────────────────────────────────────
 
 export default function App() {
@@ -1196,6 +1570,7 @@ export default function App() {
   const [activeNav,setActiveNav]=useState('dashboard')
   const [selected,setSelected]=useState(null)
   const [showNovoAluno,setShowNovoAluno]=useState(false)
+  const [showCalendarioBuilder,setShowCalendarioBuilder]=useState(false)
   const [filterTurma,setFilterTurma]=useState('')
   const [filterChurn,setFilterChurn]=useState('')
   const [search,setSearch]=useState('')
@@ -1289,7 +1664,7 @@ export default function App() {
         ):activeNav==='alunos'?(
           <AlunosModule alunos={alunos} turmas={turmas} consultores={consultores} onSelectAluno={id=>setSelected(id)} onNovoAluno={()=>setShowNovoAluno(true)}/>
         ):activeNav==='calendario'?(
-          <CalendarioModule turmas={turmas} aulas={aulas} alunos={alunos} presencas={presencas} onUpdate={loadAll}/>
+          <CalendarioModule turmas={turmas} aulas={aulas} alunos={alunos} presencas={presencas} onUpdate={loadAll} onOpenBuilder={()=>setShowCalendarioBuilder(true)}/>
         ):(
           <TarefasModule tarefas={tarefas} consultores={consultores} alunos={alunos} turmas={turmas} templates={templates} onUpdate={loadAll}/>
         )}
@@ -1297,6 +1672,7 @@ export default function App() {
 
       {selectedAluno&&(<StudentPanel aluno={selectedAluno} aulas={aulas} reunioes={reunioes.filter(r=>r.aluno_id===selectedAluno.id)} tarefas={tarefas.filter(t=>t.aluno_id===selectedAluno.id)} presencas={presencas} notas={notas.filter(n=>n.aluno_id===selectedAluno.id)} historico={historico.filter(h=>h.aluno_id===selectedAluno.id)} contatos={contatos.filter(c=>c.aluno_id===selectedAluno.id)} consultores={consultores} turmas={turmas} onClose={()=>setSelected(null)} onUpdate={loadAll}/>)}
       {showNovoAluno&&(<NovoAlunoModal consultores={consultores} turmas={turmas} onClose={()=>setShowNovoAluno(false)} onSaved={()=>{setShowNovoAluno(false);loadAll()}}/>)}
+      {showCalendarioBuilder&&(<CalendarioBuilder turmas={turmas} consultores={consultores} templates={templates} onClose={()=>setShowCalendarioBuilder(false)} onSaved={()=>{setShowCalendarioBuilder(false);loadAll()}}/>)}
     </div>
     </>
   )
