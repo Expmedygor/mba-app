@@ -662,6 +662,218 @@ function CalendarioModule({ turmas, aulas, alunos, presencas, onUpdate }) {
   </>)
 }
 
+// ─── Módulo Tarefas ───────────────────────────────────────────────────
+
+function TarefasModule({ tarefas, consultores, alunos, onUpdate }) {
+  const [filterConsultor, setFilterConsultor] = useState('')
+  const [filterTipo, setFilterTipo] = useState('')
+  const [filterStatus, setFilterStatus] = useState('abertas')
+  const [showNova, setShowNova] = useState(false)
+  const [nova, setNova] = useState({ descricao:'', consultor_id:'', aluno_id:'', tipo:'tarefa', prazo:'' })
+  const [saving, setSaving] = useState(false)
+
+  const TIPO_CORES = {
+    tarefa:  { bg:'#eff6ff', text:'#1d4ed8', border:'#bfdbfe', label:'Tarefa' },
+    churn:   { bg:'#fef2f2', text:'#7f1d1d', border:'#fca5a5', label:'Antichurn' },
+    reuniao: { bg:'#f0fdf4', text:'#14532d', border:'#86efac', label:'Reunião' },
+  }
+
+  const filtered = tarefas.filter(t => {
+    if (filterConsultor && t.consultor_id !== filterConsultor) return false
+    if (filterTipo && t.tipo !== filterTipo) return false
+    if (filterStatus === 'abertas' && t.concluida) return false
+    if (filterStatus === 'concluidas' && !t.concluida) return false
+    return true
+  })
+
+  // Agrupar por consultor
+  const porConsultor = {}
+  const consultoresComTarefas = filterConsultor
+    ? consultores.filter(c => c.id === filterConsultor)
+    : consultores
+  consultoresComTarefas.forEach(c => { porConsultor[c.id] = { consultor: c, tarefas: [] } })
+  filtered.forEach(t => {
+    if (porConsultor[t.consultor_id]) porConsultor[t.consultor_id].tarefas.push(t)
+  })
+
+  const hoje = new Date().toISOString().split('T')[0]
+
+  async function salvarNova() {
+    if (!nova.descricao.trim() || !nova.consultor_id) return
+    setSaving(true)
+    await supabase.from('tarefas').insert({
+      descricao: nova.descricao.trim(),
+      consultor_id: nova.consultor_id,
+      aluno_id: nova.aluno_id || null,
+      tipo: nova.tipo,
+      prazo: nova.prazo || null,
+    })
+    setNova({ descricao:'', consultor_id:'', aluno_id:'', tipo:'tarefa', prazo:'' })
+    setSaving(false); setShowNova(false); onUpdate()
+  }
+
+  async function toggleConcluida(tarefa) {
+    const concluida = !tarefa.concluida
+    await supabase.from('tarefas').update({
+      concluida,
+      concluida_em: concluida ? new Date().toISOString() : null,
+    }).eq('id', tarefa.id)
+    onUpdate()
+  }
+
+  async function deletarTarefa(id) {
+    await supabase.from('tarefas').delete().eq('id', id)
+    onUpdate()
+  }
+
+  const selStyle = { fontSize:12, padding:'6px 10px', background:'var(--surface)', border:'1.5px solid var(--border2)', borderRadius:7, color:'var(--text)', outline:'none', cursor:'pointer', fontWeight:500 }
+
+  const totalAbertas = tarefas.filter(t => !t.concluida).length
+  const vencidas = tarefas.filter(t => !t.concluida && t.prazo && t.prazo < hoje).length
+
+  return (<>
+    {/* Header */}
+    <div style={{padding:'13px 22px', background:'var(--surface)', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexWrap:'wrap'}}>
+      <div>
+        <div style={{fontSize:16, fontWeight:700, color:'var(--text)'}}>Tarefas</div>
+        <div style={{fontSize:11, color:'var(--muted)', marginTop:2}}>
+          {totalAbertas} abertas
+          {vencidas > 0 && <span style={{marginLeft:8, fontWeight:600, color:'#dc2626'}}>· {vencidas} vencidas</span>}
+        </div>
+      </div>
+      <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
+        <select value={filterConsultor} onChange={e=>setFilterConsultor(e.target.value)} style={selStyle}>
+          <option value="">Todos os consultores</option>
+          {consultores.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+        </select>
+        <select value={filterTipo} onChange={e=>setFilterTipo(e.target.value)} style={selStyle}>
+          <option value="">Todos os tipos</option>
+          <option value="tarefa">Tarefa</option>
+          <option value="churn">Antichurn</option>
+          <option value="reuniao">Reunião</option>
+        </select>
+        <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={selStyle}>
+          <option value="abertas">Abertas</option>
+          <option value="concluidas">Concluídas</option>
+          <option value="todas">Todas</option>
+        </select>
+        <Btn onClick={()=>setShowNova(true)} variant='primary' style={{fontSize:12, padding:'6px 14px'}}>+ Nova tarefa</Btn>
+      </div>
+    </div>
+
+    {/* Colunas por consultor */}
+    <div style={{flex:1, overflowX:'auto', overflowY:'auto', padding:'18px 22px'}}>
+      <div style={{display:'flex', gap:14, alignItems:'flex-start', minWidth: 0}}>
+        {Object.values(porConsultor).map(({ consultor, tarefas: tList }) => {
+          const abertas = tList.filter(t => !t.concluida).length
+          const venc = tList.filter(t => !t.concluida && t.prazo && t.prazo < hoje).length
+          return (
+            <div key={consultor.id} style={{flex:'1 1 0', minWidth:220, maxWidth:340}}>
+              {/* Cabeçalho da coluna */}
+              <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:10, padding:'10px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10}}>
+                <div style={{width:32, height:32, borderRadius:'50%', background:'var(--accent-dim)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'var(--accent-text)', flexShrink:0}}>
+                  {consultor.nome.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:13, fontWeight:600, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{consultor.nome}</div>
+                  <div style={{fontSize:11, color:'var(--muted)'}}>{abertas} aberta{abertas!==1?'s':''}{venc>0&&<span style={{color:'#dc2626', fontWeight:600}}> · {venc} vencida{venc!==1?'s':''}</span>}</div>
+                </div>
+              </div>
+
+              {/* Tarefas */}
+              <div style={{display:'flex', flexDirection:'column', gap:7}}>
+                {tList.length === 0 ? (
+                  <div style={{textAlign:'center', padding:'20px 10px', color:'var(--muted)', fontSize:12, background:'var(--surface2)', borderRadius:9, border:'1px dashed var(--border2)'}}>
+                    Sem tarefas
+                  </div>
+                ) : tList.map(t => {
+                  const tc = TIPO_CORES[t.tipo] || TIPO_CORES.tarefa
+                  const aluno = alunos.find(a => a.id === t.aluno_id)
+                  const vencida = !t.concluida && t.prazo && t.prazo < hoje
+                  const hoje_flag = !t.concluida && t.prazo && t.prazo === hoje
+                  return (
+                    <div key={t.id} style={{
+                      background: t.concluida ? 'var(--surface2)' : 'var(--surface)',
+                      border: `1px solid ${vencida ? '#fca5a5' : hoje_flag ? '#fdba74' : 'var(--border)'}`,
+                      borderRadius:10, padding:'11px 13px',
+                      opacity: t.concluida ? 0.65 : 1,
+                      transition:'all 0.15s',
+                    }}>
+                      <div style={{display:'flex', alignItems:'flex-start', gap:8}}>
+                        {/* Checkbox */}
+                        <button
+                          onClick={() => toggleConcluida(t)}
+                          style={{
+                            width:18, height:18, borderRadius:5, flexShrink:0, marginTop:1,
+                            border:`2px solid ${t.concluida ? '#16a34a' : 'var(--border2)'}`,
+                            background: t.concluida ? '#16a34a' : 'transparent',
+                            cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
+                          }}
+                        >
+                          {t.concluida && <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>}
+                        </button>
+                        <div style={{flex:1, minWidth:0}}>
+                          <div style={{fontSize:12, fontWeight:500, color: t.concluida ? 'var(--muted)' : 'var(--text)', lineHeight:1.4, textDecoration: t.concluida ? 'line-through' : 'none', wordBreak:'break-word'}}>
+                            {t.descricao}
+                          </div>
+                          <div style={{display:'flex', alignItems:'center', gap:6, marginTop:6, flexWrap:'wrap'}}>
+                            <span style={{fontSize:10, fontWeight:600, padding:'1px 7px', borderRadius:20, background:tc.bg, color:tc.text, border:`1px solid ${tc.border}`}}>
+                              {tc.label}
+                            </span>
+                            {aluno && (
+                              <span style={{fontSize:10, color:'var(--muted)', fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:100}}>
+                                {aluno.nome.split(' ')[0]}
+                              </span>
+                            )}
+                            {t.prazo && (
+                              <span style={{fontSize:10, fontWeight:600, color: vencida ? '#dc2626' : hoje_flag ? '#c2410c' : 'var(--muted)', fontFamily:'var(--mono)'}}>
+                                {vencida ? '⚠ ' : hoje_flag ? '⏰ ' : ''}{fd(t.prazo)}
+                              </span>
+                            )}
+                          </div>
+                          {t.concluida && t.concluida_em && (
+                            <div style={{fontSize:10, color:'#16a34a', marginTop:4}}>✓ {fd(t.concluida_em.split('T')[0])}</div>
+                          )}
+                        </div>
+                        {/* Deletar */}
+                        <button onClick={()=>deletarTarefa(t.id)} style={{background:'none', border:'none', cursor:'pointer', color:'var(--muted)', fontSize:14, padding:'0 2px', opacity:0.5, flexShrink:0}}
+                          onMouseEnter={e=>e.target.style.opacity=1} onMouseLeave={e=>e.target.style.opacity=0.5}>✕</button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+
+    {/* Modal nova tarefa */}
+    {showNova && (
+      <Modal title="Nova tarefa" onClose={()=>setShowNova(false)} width={480}>
+        <SelectField label="Responsável *" value={nova.consultor_id} onChange={v=>setNova(n=>({...n,consultor_id:v}))} required
+          options={consultores.map(c=>({value:c.id,label:c.nome}))}/>
+        <Textarea label="Descrição *" value={nova.descricao} onChange={v=>setNova(n=>({...n,descricao:v}))} rows={3}
+          placeholder="O que precisa ser feito..." required/>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+          <SelectField label="Tipo" value={nova.tipo} onChange={v=>setNova(n=>({...n,tipo:v}))}
+            options={[{value:'tarefa',label:'Tarefa'},{value:'churn',label:'Antichurn'},{value:'reuniao',label:'Reunião'}]}/>
+          <Input label="Prazo" type="date" value={nova.prazo} onChange={v=>setNova(n=>({...n,prazo:v}))}/>
+        </div>
+        <SelectField label="Aluno relacionado (opcional)" value={nova.aluno_id} onChange={v=>setNova(n=>({...n,aluno_id:v}))}
+          options={alunos.filter(a=>a.status_aluno==='ativo').map(a=>({value:a.id,label:a.nome}))}/>
+        <div style={{display:'flex', gap:8, justifyContent:'flex-end', paddingTop:4, borderTop:'1px solid var(--border)'}}>
+          <Btn onClick={()=>setShowNova(false)} variant='ghost'>Cancelar</Btn>
+          <Btn onClick={salvarNova} variant='primary' disabled={saving||!nova.descricao.trim()||!nova.consultor_id}>
+            {saving ? 'Salvando...' : 'Criar tarefa'}
+          </Btn>
+        </div>
+      </Modal>
+    )}
+  </>)
+}
+
 // ─── App principal ────────────────────────────────────────────────────
 
 export default function App() {
@@ -774,7 +986,7 @@ export default function App() {
         ):activeNav==='calendario'?(
           <CalendarioModule turmas={turmas} aulas={aulas} alunos={alunos} presencas={presencas} onUpdate={loadAll}/>
         ):(
-          <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--muted)',fontSize:13}}>Em construção</div>
+          <TarefasModule tarefas={tarefas} consultores={consultores} alunos={alunos} onUpdate={loadAll}/>
         )}
       </div>
 
